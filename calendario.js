@@ -41,6 +41,7 @@ const CAL_CONFIG = {
   const hoy = madrid(new Date());
   const hoyKey = key(hoy.y, hoy.m, hoy.d);
   let vista = { y: hoy.y, m: hoy.m };
+  let seleccion = null; // fecha elegida en "¿Qué día quieres celebrarlo?"
 
   function abierto(y, m, d) {
     const k = key(y, m, d);
@@ -114,7 +115,7 @@ const CAL_CONFIG = {
     const k = key(y, m, d);
     const pasado = k < hoyKey, esHoy = k === hoyKey;
     const num = `<span class="text-xs sm:text-sm font-bold ${esHoy ? 'inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary text-white' : ''}">${d}</span>`;
-    const base = 'relative min-h-[58px] sm:min-h-[92px] rounded-xl p-1 sm:p-2 flex flex-col gap-0.5 sm:gap-1 text-left';
+    const base = 'relative min-h-[58px] sm:min-h-[92px] rounded-xl p-1 sm:p-2 flex flex-col gap-0.5 sm:gap-1 text-left' + (k === seleccion && enMes ? ' ring-[3px] ring-offset-2 ring-[#25D366] z-10' : '');
     if (!enMes) return `<div class="${base} opacity-30">${num}</div>`;
     if (pasado) return `<div class="${base} bg-surface-container-low text-outline opacity-60">${num}</div>`;
     if (!abierto(y, m, d)) return `<div class="${base} bg-surface-container-low text-outline">${num}<span class="text-[10px] sm:text-xs">Cerrado</span></div>`;
@@ -127,6 +128,32 @@ const CAL_CONFIG = {
       return `<div class="${base} bg-primary-container text-white" title="Reservado">${num}<span class="text-[10px] sm:text-xs font-semibold">Reservado</span></div>`;
     }
     return `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" aria-label="Reservar el ${d} de ${MESES[m - 1]} por WhatsApp" class="${base} bg-secondary-fixed text-primary ring-0 hover:ring-2 hover:ring-secondary transition-shadow group">${num}<span class="text-[10px] sm:text-xs font-semibold">Libre</span><span class="hidden sm:block mt-auto text-[11px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">Reservar →</span></a>`;
+  }
+
+  function estadoDia(y, m, d, datos, estado) {
+    const k = key(y, m, d);
+    if (k < hoyKey) return 'pasado';
+    if (!abierto(y, m, d)) return 'cerrado';
+    if (estado === 'cargando') return 'cargando';
+    if (estado === 'sin-datos') return 'sin-datos';
+    return datos && datos[k] ? 'reservado' : 'libre';
+  }
+
+  function avisoSeleccion(datos, estado) {
+    if (!seleccion) return '';
+    const [y, m, d] = seleccion.split('-').map(Number);
+    if (y !== vista.y || m !== vista.m) return '';
+    const fecha = `${DIAS[dow(y, m, d)]} ${d} de ${MESES[m - 1]}`;
+    const wa = (txt) => `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 bg-[#25D366] text-white font-semibold text-sm px-4 py-2.5 rounded-full shadow-sm hover:scale-[1.02] transition-transform shrink-0">${txt}</a>`;
+    const caja = (cls, icon, texto, extra = '') => `<div class="flex flex-col sm:flex-row sm:items-center gap-3 rounded-2xl px-4 py-3 ${cls}"><p class="flex-1 text-sm sm:text-base"><span class="mr-1">${icon}</span>${texto}</p>${extra}</div>`;
+    switch (estadoDia(y, m, d, datos, estado)) {
+      case 'libre': return caja('bg-[#e8f8ee] text-[#14532d]', '✅', `<b>¡El ${fecha} está libre!</b> Escríbenos para reservarlo.`, wa('Reservar este día por WhatsApp'));
+      case 'reservado': return caja('bg-[#fdecec] text-[#7f1d1d]', '❌', `<b>El ${fecha} ya está reservado.</b> Elige otro día de los marcados en lila.`);
+      case 'cerrado': return caja('bg-surface-container-low text-on-surface', '🔒', `<b>El ${fecha} estamos cerrados.</b> Abrimos viernes, sábados, domingos, vísperas y festivos. Si es festivo o víspera, pregúntanos.`, wa('Preguntar por WhatsApp'));
+      case 'pasado': return caja('bg-surface-container-low text-on-surface', '📅', `<b>Esa fecha ya ha pasado.</b> Elige un día a partir de hoy.`);
+      case 'sin-datos': return caja('bg-surface-container-low text-on-surface', 'ℹ️', `No podemos comprobar el ${fecha} en este momento. Pregúntanos y te lo decimos.`, wa('Preguntar por WhatsApp'));
+      default: return caja('bg-surface-container-low text-on-surface-variant animate-pulse', '⏳', `Comprobando el ${fecha}…`);
+    }
   }
 
   function pintar(datos, estado) {
@@ -143,7 +170,7 @@ const CAL_CONFIG = {
     const aviso = estado === 'sin-datos'
       ? `<p class="text-xs sm:text-sm text-on-surface-variant bg-surface-container-low rounded-xl px-3 py-2">No podemos mostrar la disponibilidad en este momento. Toca un día para preguntarnos por WhatsApp.</p>` : '';
     const btn = (dir, on, label, icon) => `<button type="button" data-dir="${dir}" ${on ? '' : 'disabled'} aria-label="${label}" class="w-9 h-9 rounded-full flex items-center justify-center text-primary hover:bg-secondary-fixed disabled:opacity-30 disabled:hover:bg-transparent transition-colors"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${icon}"/></svg></button>`;
-    root.className = 'w-full flex flex-col gap-3';
+    root.className = 'w-full flex flex-col gap-3 scroll-mt-28';
     root.innerHTML = `
       <div class="flex items-center justify-between gap-2">
         <div class="flex items-center gap-1">${btn(-1, puedeAtras, 'Mes anterior', 'M15 6l-6 6 6 6')}${btn(1, puedeAdelante, 'Mes siguiente', 'M9 6l6 6-6 6')}</div>
@@ -151,6 +178,7 @@ const CAL_CONFIG = {
         <button type="button" data-dir="0" class="text-xs sm:text-sm font-semibold text-secondary px-3 py-1.5 rounded-full hover:bg-secondary-fixed transition-colors">Hoy</button>
       </div>
       ${aviso}
+      ${avisoSeleccion(datos, estado)}
       <div class="grid grid-cols-7 gap-1 sm:gap-1.5 text-center text-[11px] sm:text-xs font-semibold uppercase tracking-wide text-on-surface-variant">
         ${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((x, i) => `<span><span class="sm:hidden">${x}</span><span class="hidden sm:inline">${['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'][i]}</span></span>`).join('')}
       </div>
@@ -197,6 +225,12 @@ const CAL_CONFIG = {
     }
     return out;
   }
+
+  window.yfpComprobarFecha = function (y, m, d) {
+    seleccion = key(y, m, d);
+    vista = { y, m };
+    mostrar();
+  };
 
   mostrar();
 })();

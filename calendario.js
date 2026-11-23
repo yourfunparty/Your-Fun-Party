@@ -41,6 +41,7 @@ const CAL_CONFIG = {
   const hoy = madrid(new Date());
   const hoyKey = key(hoy.y, hoy.m, hoy.d);
   let vista = { y: hoy.y, m: hoy.m };
+  let enfocarAviso = false;
   let seleccion = null; // fecha elegida en "¿Qué día quieres celebrarlo?"
 
   function abierto(y, m, d) {
@@ -106,8 +107,13 @@ const CAL_CONFIG = {
     return (cache[k] = aReservados(porDia(cal.busy || [])));
   }
 
-  function waLink(y, m, d) {
-    const txt = `Hola, me gustaría reservar la sala el ${DIAS[dow(y, m, d)]} ${d} de ${MESES[m - 1]} de ${y}. ¿Está disponible?`;
+  function waLink(y, m, d, tipo = 'libre') {
+    const fecha = `${DIAS[dow(y, m, d)]} ${d} de ${MESES[m - 1]} de ${y}`;
+    const txt = {
+      libre: `Hola, he visto en la web que el ${fecha} está disponible y me gustaría reservarlo para una fiesta.`,
+      cerrado: `Hola, me gustaría celebrar una fiesta el ${fecha}. ¿Abrís ese día?`,
+      consultar: `Hola, me gustaría reservar la sala para una fiesta el ${fecha}.`,
+    }[tipo];
     return `https://wa.me/${CAL_CONFIG.whatsapp}?text=${encodeURIComponent(txt)}`;
   }
 
@@ -122,12 +128,70 @@ const CAL_CONFIG = {
 
     if (estadoGlobal === 'cargando') return `<div class="${base} bg-surface-container-low text-outline animate-pulse">${num}<span class="text-[10px] sm:text-xs">···</span></div>`;
     if (estadoGlobal === 'sin-datos') {
-      return `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" class="${base} bg-surface-container-lowest border border-outline-variant text-primary hover:border-secondary transition-colors">${num}<span class="text-[10px] sm:text-xs text-on-surface-variant">Consultar</span></a>`;
+      return `<button type="button" data-dia="${k}" aria-label="Seleccionar el ${d} de ${MESES[m - 1]}" class="${base} bg-surface-container-lowest border border-outline-variant text-primary hover:border-secondary transition-colors">${num}<span class="text-[10px] sm:text-xs text-on-surface-variant">Consultar</span></button>`;
     }
     if (tramos) {
       return `<div class="${base} bg-primary-container text-white" title="Reservado">${num}<span class="text-[10px] sm:text-xs font-semibold">Reservado</span></div>`;
     }
-    return `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" aria-label="Reservar el ${d} de ${MESES[m - 1]} por WhatsApp" class="${base} bg-secondary-fixed text-primary ring-0 hover:ring-2 hover:ring-secondary transition-shadow group">${num}<span class="text-[10px] sm:text-xs font-semibold">Libre</span><span class="hidden sm:block mt-auto text-[11px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">Reservar →</span></a>`;
+    const sel = k === seleccion;
+    return `<button type="button" data-dia="${k}" aria-pressed="${sel}" aria-label="Seleccionar el ${d} de ${MESES[m - 1]}, libre" class="${base} ${sel ? 'bg-[#e8f8ee]' : 'bg-secondary-fixed hover:ring-2 hover:ring-secondary'} text-primary transition-shadow group">${num}<span class="text-[10px] sm:text-xs font-semibold">${sel ? 'Elegido' : 'Libre'}</span>${sel ? '' : '<span class="hidden sm:block mt-auto text-[11px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">Seleccionar</span>'}</button>`;
+  }
+
+  // ===== Escasez real, calculada con el calendario =====
+  const diasMes = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const pl = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+  function resumenMes(y, m, datos) {
+    const r = { abiertos: 0, libres: 0, sabados: 0, sabLibres: 0 };
+    for (let d = 1; d <= diasMes(y, m); d++) {
+      const k = key(y, m, d);
+      if (k < hoyKey || !abierto(y, m, d)) continue;
+      const libre = !(datos && datos[k]);
+      r.abiertos++; if (libre) r.libres++;
+      if (dow(y, m, d) === 5) { r.sabados++; if (libre) r.sabLibres++; }
+    }
+    return r;
+  }
+  // Devuelve { urgente, texto } o null. Solo es "urgente" cuando de verdad quedan pocos días.
+  function escasez(y, m, datos) {
+    const r = resumenMes(y, m, datos), mes = MESES[m - 1];
+    if (!r.abiertos) return null;
+    if (!r.libres) return { urgente: true, texto: `${mes[0].toUpperCase() + mes.slice(1)} está completo` };
+    if (r.sabados && r.sabLibres <= 3 && r.sabLibres < r.sabados) {
+      if (!r.sabLibres) return { urgente: true, texto: `Ya no quedan sábados libres en ${mes} · quedan ${pl(r.libres, 'día', 'días')}` };
+      return { urgente: true, texto: `Solo ${r.sabLibres === 1 ? 'queda 1 sábado libre' : `quedan ${r.sabLibres} sábados libres`} en ${mes}` };
+    }
+    if (r.libres <= 6 && r.libres < r.abiertos) return { urgente: true, texto: `Solo ${r.libres === 1 ? 'queda 1 día libre' : `quedan ${r.libres} días libres`} en ${mes}` };
+    return { urgente: false, texto: `En ${mes} quedan ${pl(r.libres, 'día libre', 'días libres')}, ${pl(r.sabLibres, 'sábado', 'sábados')}` };
+  }
+
+  // Aviso en la portada: mes actual (si le quedan días) o el siguiente. Solo si hay urgencia real.
+  async function avisoPortada() {
+    const el = document.getElementById('escasezHero');
+    if (!el || (!configurado && !demo)) return;
+    const meses = [[hoy.y, hoy.m]];
+    const sig = new Date(Date.UTC(hoy.y, hoy.m, 1)); meses.push([sig.getUTCFullYear(), sig.getUTCMonth() + 1]);
+    for (const [y, m] of meses) {
+      let datos;
+      try { datos = await cargar(y, m); } catch (e) { return; }
+      if (!datos) return;
+      const r = resumenMes(y, m, datos);
+      if (r.abiertos < 7 || !r.libres) continue; // mes casi terminado o ya completo: miramos el siguiente
+      const e = escasez(y, m, datos);
+      if (e && e.urgente) {
+        el.innerHTML = `<a href="#disponibilidad" class="inline-flex items-center gap-2 rounded-full bg-[#fff1e6] text-[#9a3412] border border-[#fed7aa] px-4 py-2 text-sm font-semibold hover:bg-[#ffe4cc] transition-colors"><span aria-hidden="true">🔥</span>${e.texto}<span class="font-bold">· Ver fechas →</span></a>`;
+        el.classList.remove('hidden');
+        return;
+      }
+    }
+  }
+
+  function lineaEscasez(datos, estado) {
+    if (estado !== 'ok') return '';
+    const e = escasez(vista.y, vista.m, datos);
+    if (!e) return '';
+    return e.urgente
+      ? `<p class="flex items-center justify-center gap-2 rounded-xl bg-[#fff1e6] text-[#9a3412] px-3 py-2 text-sm font-semibold"><span aria-hidden="true">🔥</span>${e.texto}</p>`
+      : `<p class="text-center text-sm text-on-surface-variant">${e.texto}</p>`;
   }
 
   function estadoDia(y, m, d, datos, estado) {
@@ -144,14 +208,14 @@ const CAL_CONFIG = {
     const [y, m, d] = seleccion.split('-').map(Number);
     if (y !== vista.y || m !== vista.m) return '';
     const fecha = `${DIAS[dow(y, m, d)]} ${d} de ${MESES[m - 1]}`;
-    const wa = (txt) => `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 bg-[#25D366] text-white font-semibold text-sm px-4 py-2.5 rounded-full shadow-sm hover:scale-[1.02] transition-transform shrink-0">${txt}</a>`;
-    const caja = (cls, icon, texto, extra = '') => `<div class="flex flex-col sm:flex-row sm:items-center gap-3 rounded-2xl px-4 py-3 ${cls}"><p class="flex-1 text-sm sm:text-base"><span class="mr-1">${icon}</span>${texto}</p>${extra}</div>`;
+    const wa = (txt, tipo) => `<a href="${waLink(y, m, d, tipo)}" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 bg-[#25D366] text-white font-semibold text-sm px-4 py-2.5 rounded-full shadow-sm hover:scale-[1.02] transition-transform shrink-0">${txt}</a>`;
+    const caja = (cls, icon, texto, extra = '') => `<div id="calAviso" class="scroll-mt-28 flex flex-col sm:flex-row sm:items-center gap-3 rounded-2xl px-4 py-3 ${cls}"><p class="flex-1 text-sm sm:text-base"><span class="mr-1">${icon}</span>${texto}</p>${extra}</div>`;
     switch (estadoDia(y, m, d, datos, estado)) {
-      case 'libre': return caja('bg-[#e8f8ee] text-[#14532d]', '✅', `<b>¡El ${fecha} está libre!</b> Escríbenos para reservarlo.`, wa('Reservar este día por WhatsApp'));
+      case 'libre': return caja('bg-[#e8f8ee] text-[#14532d]', '✅', `<b>¡El ${fecha} está disponible!</b><br><span class="text-[13px] sm:text-sm">Las fechas vuelan: resérvala ahora antes de que otra familia se adelante.</span>`, wa('Reservar este día por WhatsApp', 'libre'));
       case 'reservado': return caja('bg-[#fdecec] text-[#7f1d1d]', '❌', `<b>El ${fecha} ya está reservado.</b> Elige otro día de los marcados en lila.`);
-      case 'cerrado': return caja('bg-surface-container-low text-on-surface', '🔒', `<b>El ${fecha} estamos cerrados.</b> Abrimos viernes, sábados, domingos, vísperas y festivos. Si es festivo o víspera, pregúntanos.`, wa('Preguntar por WhatsApp'));
+      case 'cerrado': return caja('bg-surface-container-low text-on-surface', '🔒', `<b>El ${fecha} estamos cerrados.</b> Abrimos viernes, sábados, domingos, vísperas y festivos. Si es festivo o víspera, pregúntanos.`, wa('Preguntar por WhatsApp', 'cerrado'));
       case 'pasado': return caja('bg-surface-container-low text-on-surface', '📅', `<b>Esa fecha ya ha pasado.</b> Elige un día a partir de hoy.`);
-      case 'sin-datos': return caja('bg-surface-container-low text-on-surface', 'ℹ️', `No podemos comprobar el ${fecha} en este momento. Pregúntanos y te lo decimos.`, wa('Preguntar por WhatsApp'));
+      case 'sin-datos': return caja('bg-surface-container-low text-on-surface', 'ℹ️', `No podemos comprobar el ${fecha} en este momento. Pregúntanos y te lo decimos.`, wa('Preguntar por WhatsApp', 'consultar'));
       default: return caja('bg-surface-container-low text-on-surface-variant animate-pulse', '⏳', `Comprobando el ${fecha}…`);
     }
   }
@@ -168,7 +232,7 @@ const CAL_CONFIG = {
       cells += celda(cy, cm, cd, cm === m, datos && datos[key(cy, cm, cd)], estado);
     }
     const aviso = estado === 'sin-datos'
-      ? `<p class="text-xs sm:text-sm text-on-surface-variant bg-surface-container-low rounded-xl px-3 py-2">No podemos mostrar la disponibilidad en este momento. Toca un día para preguntarnos por WhatsApp.</p>` : '';
+      ? `<p class="text-xs sm:text-sm text-on-surface-variant bg-surface-container-low rounded-xl px-3 py-2">No podemos mostrar la disponibilidad en este momento. Toca un día para preguntarnos.</p>` : '';
     const btn = (dir, on, label, icon) => `<button type="button" data-dir="${dir}" ${on ? '' : 'disabled'} aria-label="${label}" class="w-9 h-9 rounded-full flex items-center justify-center text-primary hover:bg-secondary-fixed disabled:opacity-30 disabled:hover:bg-transparent transition-colors"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${icon}"/></svg></button>`;
     root.className = 'w-full flex flex-col gap-3 scroll-mt-28';
     root.innerHTML = `
@@ -178,17 +242,23 @@ const CAL_CONFIG = {
         <button type="button" data-dir="0" class="text-xs sm:text-sm font-semibold text-secondary px-3 py-1.5 rounded-full hover:bg-secondary-fixed transition-colors">Hoy</button>
       </div>
       ${aviso}
+      ${lineaEscasez(datos, estado)}
       ${avisoSeleccion(datos, estado)}
       <div class="grid grid-cols-7 gap-1 sm:gap-1.5 text-center text-[11px] sm:text-xs font-semibold uppercase tracking-wide text-on-surface-variant">
         ${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((x, i) => `<span><span class="sm:hidden">${x}</span><span class="hidden sm:inline">${['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'][i]}</span></span>`).join('')}
       </div>
       <div class="grid grid-cols-7 gap-1 sm:gap-1.5">${cells}</div>
       <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-on-surface-variant pt-1">
-        <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-secondary-fixed ring-1 ring-secondary/40"></span>Libre · toca para reservar</span>
+        <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-secondary-fixed ring-1 ring-secondary/40"></span>Libre · toca para elegirlo</span>
         <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-primary-container"></span>Reservado</span>
         <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-surface-container-low ring-1 ring-outline-variant"></span>Cerrado</span>
       </div>
       <p class="text-xs text-on-surface-variant">¿Festivo o víspera entre semana? Escríbenos y te decimos si está libre.</p>`;
+    root.querySelectorAll('button[data-dia]').forEach((b) => b.addEventListener('click', () => {
+      seleccion = b.dataset.dia;
+      enfocarAviso = true;
+      mostrar();
+    }));
     root.querySelectorAll('button[data-dir]').forEach((b) => b.addEventListener('click', () => {
       const dir = +b.dataset.dir;
       if (dir === 0) vista = { y: hoy.y, m: hoy.m };
@@ -205,6 +275,11 @@ const CAL_CONFIG = {
       const datos = await cargar(y, m);
       if (vista.y !== y || vista.m !== m) return;
       pintar(datos, datos ? 'ok' : 'sin-datos');
+      if (enfocarAviso) {
+        enfocarAviso = false;
+        const av = document.getElementById('calAviso');
+        if (av) { const r = av.getBoundingClientRect(); if (r.top < 90 || r.bottom > innerHeight) av.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      }
     } catch (e) {
       console.warn('[Calendario] No se pudo leer la disponibilidad:', e.message);
       if (vista.y === y && vista.m === m) pintar(null, 'sin-datos');
@@ -233,4 +308,5 @@ const CAL_CONFIG = {
   };
 
   mostrar();
+  avisoPortada();
 })();

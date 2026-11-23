@@ -30,8 +30,19 @@ function addDay(ymd, n) {
   return t.toISOString().slice(0, 10);
 }
 
-function diasOcupados(ics, desde, hasta) {
-  const dias = new Set();
+// Palabras clave en el título del evento:
+//   "ABIERTO" -> abre ese día aunque sea de lunes a jueves (no cuenta como reserva)
+//   "CERRADO" -> cierra ese día (vacaciones, imprevistos...)
+//   cualquier otro título -> día reservado
+const clave = (summary) => {
+  const t = (summary || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();
+  if (/^ABIERT[OA]\b/.test(t)) return 'abiertos';
+  if (/^CERRAD[OA]\b/.test(t)) return 'cerrados';
+  return 'reservados';
+};
+
+function clasificarDias(ics, desde, hasta) {
+  const out = { reservados: new Set(), abiertos: new Set(), cerrados: new Set() };
   let ev = null;
   for (const line of unfold(ics)) {
     if (line === 'BEGIN:VEVENT') ev = {};
@@ -42,17 +53,21 @@ function diasOcupados(ics, desde, hasta) {
         if (ev.end && (ev.end.allDay || ev.end.midnight) && fin > ev.start.date) fin = addDay(fin, -1);
         if (fin < ev.start.date) fin = ev.start.date;
         let d = ev.start.date;
-        for (let i = 0; d <= fin && i < 60; i++, d = addDay(d, 1)) if (d >= desde && d <= hasta) dias.add(d);
+        const set = out[clave(ev.summary)];
+        for (let i = 0; d <= fin && i < 60; i++, d = addDay(d, 1)) if (d >= desde && d <= hasta) set.add(d);
       }
       ev = null;
     } else if (ev) {
       if (line.startsWith('DTSTART')) ev.start = parseDate(line);
       else if (line.startsWith('DTEND')) ev.end = parseDate(line);
       else if (line.startsWith('STATUS:')) ev.status = line.slice(7).trim();
+      else if (line.startsWith('SUMMARY')) ev.summary = line.slice(line.indexOf(':') + 1).replace(/\\,/g, ',').replace(/\\;/g, ';');
     }
   }
-  return [...dias].sort();
+  const lista = (set) => [...set].sort();
+  return { reservados: lista(out.reservados), abiertos: lista(out.abiertos), cerrados: lista(out.cerrados) };
 }
+const diasOcupados = (ics, desde, hasta) => clasificarDias(ics, desde, hasta).reservados;
 
 module.exports = async (req, res) => {
   const url = process.env.CALENDAR_ICS_URL;
@@ -64,9 +79,10 @@ module.exports = async (req, res) => {
     const hoy = madridDate(new Date());
     const hasta = addDay(hoy, 400);
     res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=600');
-    return res.status(200).json({ reservados: diasOcupados(ics, addDay(hoy, -45), hasta) });
+    return res.status(200).json(clasificarDias(ics, addDay(hoy, -45), hasta));
   } catch (e) {
     return res.status(502).json({ error: 'calendario-no-disponible' });
   }
 };
 module.exports.diasOcupados = diasOcupados;
+module.exports.clasificarDias = clasificarDias;

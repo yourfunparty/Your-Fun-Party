@@ -10,9 +10,22 @@ const CAL_CONFIG = {
   apiKey: 'AIzaSyApXoOwee-FfEvKt_z0mpUMv9uVs3ntMiA',
   // Número de WhatsApp (con prefijo 34, sin espacios)
   whatsapp: '34611120529',
-  // Días de lunes a jueves que SÍ abrimos (festivos y vísperas), formato 'AAAA-MM-DD'
+  // Festivos de Leganés y de la Comunidad de Madrid (nacionales, autonómicos y locales).
+  // Abrimos el festivo y también su víspera (se calcula sola), aunque caigan de lunes a jueves.
+  // Fuente: BOE / BOCM. Añadir cada año los nuevos (los locales de Leganés se publican en diciembre).
+  festivos: [
+    // 2026
+    '2026-01-01', '2026-01-06', '2026-04-02', '2026-04-03', '2026-05-01', '2026-05-02',
+    '2026-08-14', '2026-08-15', '2026-10-09', '2026-10-12', '2026-11-02', '2026-12-07',
+    '2026-12-08', '2026-12-25',
+    // 2027 (Comunidad de Madrid; faltan los 2 festivos locales de Leganés, aún sin publicar)
+    '2027-01-01', '2027-01-06', '2027-03-19', '2027-03-25', '2027-03-26', '2027-05-01',
+    '2027-08-16', '2027-10-12', '2027-11-01', '2027-12-06', '2027-12-08', '2027-12-25',
+    // 2028
+    '2028-01-01',
+  ],
+  // Excepciones manuales (también se pueden hacer desde Google Calendar con un evento "ABIERTO" o "CERRADO")
   abiertosExtra: [],
-  // Días de viernes a domingo que estamos cerrados (vacaciones, etc.)
   cerradosExtra: [],
   mesesAdelante: 12,
 };
@@ -44,11 +57,19 @@ const CAL_CONFIG = {
   let enfocarAviso = false;
   let seleccion = null; // fecha elegida en "¿Qué día quieres celebrarlo?"
 
+  const FESTIVOS = new Set(CAL_CONFIG.festivos);
+  let abiertosCal = {}, cerradosCal = {}; // vienen de Google Calendar (eventos "ABIERTO" / "CERRADO")
+  // 'festivo' | 'vispera' | null
+  function tipoEspecial(y, m, d) {
+    if (FESTIVOS.has(key(y, m, d))) return 'festivo';
+    if (FESTIVOS.has(key(...addDays(y, m, d, 1)))) return 'vispera';
+    return null;
+  }
   function abierto(y, m, d) {
     const k = key(y, m, d);
-    if (CAL_CONFIG.cerradosExtra.includes(k)) return false;
-    if (CAL_CONFIG.abiertosExtra.includes(k)) return true;
-    return dow(y, m, d) >= 4;
+    if (cerradosCal[k] || CAL_CONFIG.cerradosExtra.includes(k)) return false;
+    if (abiertosCal[k] || CAL_CONFIG.abiertosExtra.includes(k)) return true;
+    return dow(y, m, d) >= 4 || !!tipoEspecial(y, m, d);
   }
 
   // Convierte intervalos ocupados en tramos por día (hora de Madrid)
@@ -84,7 +105,9 @@ const CAL_CONFIG = {
     try {
       const r = await fetch('/api/disponibilidad', { cache: 'no-store' });
       const j = r.ok ? await r.json() : null;
-      privado = j && Array.isArray(j.reservados) ? Object.fromEntries(j.reservados.map((d) => [d, true])) : null;
+      const mapa = (arr) => Object.fromEntries((arr || []).map((d) => [d, true]));
+      privado = j && Array.isArray(j.reservados) ? mapa(j.reservados) : null;
+      if (privado) { abiertosCal = mapa(j.abiertos); cerradosCal = mapa(j.cerrados); }
     } catch (e) { privado = null; }
     return privado;
   }
@@ -134,7 +157,9 @@ const CAL_CONFIG = {
       return `<div class="${base} bg-primary-container text-white" title="Reservado">${num}<span class="text-[10px] sm:text-xs font-semibold">Reservado</span></div>`;
     }
     const sel = k === seleccion;
-    return `<button type="button" data-dia="${k}" aria-pressed="${sel}" aria-label="Seleccionar el ${d} de ${MESES[m - 1]}, libre" class="${base} ${sel ? 'bg-[#e8f8ee]' : 'bg-secondary-fixed hover:ring-2 hover:ring-secondary'} text-primary transition-shadow group">${num}<span class="text-[10px] sm:text-xs font-semibold">${sel ? 'Elegido' : 'Libre'}</span>${sel ? '' : '<span class="hidden sm:block mt-auto text-[11px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">Seleccionar</span>'}</button>`;
+    const esp = dow(y, m, d) < 4 ? tipoEspecial(y, m, d) : null;
+    const etiqueta = esp ? `<span class="hidden sm:inline-block self-start rounded-full bg-white/70 text-secondary text-[10px] font-semibold px-1.5">${esp === 'festivo' ? 'Festivo' : 'Víspera'}</span>` : '';
+    return `<button type="button" data-dia="${k}" aria-pressed="${sel}" aria-label="Seleccionar el ${d} de ${MESES[m - 1]}, libre" class="${base} ${sel ? 'bg-[#e8f8ee]' : 'bg-secondary-fixed hover:ring-2 hover:ring-secondary'} text-primary transition-shadow group">${num}<span class="text-[10px] sm:text-xs font-semibold">${sel ? 'Elegido' : 'Libre'}</span>${etiqueta}${sel ? '' : '<span class="hidden sm:block mt-auto text-[11px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">Seleccionar</span>'}</button>`;
   }
 
   // ===== Escasez real, calculada con el calendario =====
@@ -213,7 +238,7 @@ const CAL_CONFIG = {
     switch (estadoDia(y, m, d, datos, estado)) {
       case 'libre': return caja('bg-[#e8f8ee] text-[#14532d]', '✅', `<b>¡El ${fecha} está disponible!</b><br><span class="text-[13px] sm:text-sm">Las fechas vuelan: resérvala ahora antes de que otra familia se adelante.</span>`, wa('Reservar este día por WhatsApp', 'libre'));
       case 'reservado': return caja('bg-[#fdecec] text-[#7f1d1d]', '❌', `<b>El ${fecha} ya está reservado.</b> Elige otro día de los marcados en lila.`);
-      case 'cerrado': return caja('bg-surface-container-low text-on-surface', '🔒', `<b>El ${fecha} estamos cerrados.</b> Abrimos viernes, sábados, domingos, vísperas y festivos. Si es festivo o víspera, pregúntanos.`, wa('Preguntar por WhatsApp', 'cerrado'));
+      case 'cerrado': return caja('bg-surface-container-low text-on-surface', '🔒', `<b>El ${fecha} estamos cerrados.</b> Abrimos viernes, sábados, domingos, festivos y vísperas. ¿Tienes alguna duda? Pregúntanos.`, wa('Preguntar por WhatsApp', 'cerrado'));
       case 'pasado': return caja('bg-surface-container-low text-on-surface', '📅', `<b>Esa fecha ya ha pasado.</b> Elige un día a partir de hoy.`);
       case 'sin-datos': return caja('bg-surface-container-low text-on-surface', 'ℹ️', `No podemos comprobar el ${fecha} en este momento. Pregúntanos y te lo decimos.`, wa('Preguntar por WhatsApp', 'consultar'));
       default: return caja('bg-surface-container-low text-on-surface-variant animate-pulse', '⏳', `Comprobando el ${fecha}…`);
@@ -253,7 +278,7 @@ const CAL_CONFIG = {
         <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-primary-container"></span>Reservado</span>
         <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-surface-container-low ring-1 ring-outline-variant"></span>Cerrado</span>
       </div>
-      <p class="text-xs text-on-surface-variant">¿Festivo o víspera entre semana? Escríbenos y te decimos si está libre.</p>`;
+      <p class="text-xs text-on-surface-variant">También abrimos los festivos de Leganés y de la Comunidad de Madrid y sus vísperas, aunque caigan entre semana.</p>`;
     root.querySelectorAll('button[data-dia]').forEach((b) => b.addEventListener('click', () => {
       seleccion = b.dataset.dia;
       enfocarAviso = true;

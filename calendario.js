@@ -37,7 +37,6 @@ const CAL_CONFIG = {
   }
   const addDays = (y, m, d, n) => { const t = new Date(Date.UTC(y, m - 1, d + n)); return [t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate()]; };
   const dow = (y, m, d) => (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; // 0 = lunes
-  const hhmm = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
 
   const hoy = madrid(new Date());
   const hoyKey = key(hoy.y, hoy.m, hoy.d);
@@ -67,18 +66,34 @@ const CAL_CONFIG = {
     return dias;
   }
 
+  const aReservados = (dias) => Object.fromEntries(Object.keys(dias).map((d) => [d, true]));
+
   function rango(y, m) {
     const first = [y, m, 1];
     const start = addDays(...first, -dow(...first));
     return { start, cells: 42 };
   }
 
+  // Fuente principal: función privada de Vercel (/api/disponibilidad), que lee el calendario
+  // completo y devuelve solo los días con algún evento. Se pide una vez.
+  let privado;
+  async function cargarPrivado() {
+    if (privado !== undefined) return privado;
+    try {
+      const r = await fetch('/api/disponibilidad', { cache: 'no-store' });
+      const j = r.ok ? await r.json() : null;
+      privado = j && Array.isArray(j.reservados) ? Object.fromEntries(j.reservados.map((d) => [d, true])) : null;
+    } catch (e) { privado = null; }
+    return privado;
+  }
+
   async function cargar(y, m) {
     const k = `${y}-${m}`;
     if (cache[k]) return cache[k];
+    if (!demo) { const p = await cargarPrivado(); if (p) return (cache[k] = p); }
     const { start } = rango(y, m);
     const end = addDays(...start, 42);
-    if (demo) return (cache[k] = porDia(demoBusy(start)));
+    if (demo) return (cache[k] = aReservados(porDia(demoBusy(start))));
     if (!configurado) return (cache[k] = null);
     const res = await fetch('https://www.googleapis.com/calendar/v3/freeBusy?key=' + encodeURIComponent(CAL_CONFIG.apiKey), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -87,7 +102,7 @@ const CAL_CONFIG = {
     const json = await res.json();
     const cal = json.calendars && json.calendars[CAL_CONFIG.calendarId];
     if (!res.ok || !cal || (cal.errors && cal.errors.length)) throw new Error(JSON.stringify(json.error || (cal && cal.errors) || json));
-    return (cache[k] = porDia(cal.busy || []));
+    return (cache[k] = aReservados(porDia(cal.busy || [])));
   }
 
   function waLink(y, m, d) {
@@ -108,17 +123,10 @@ const CAL_CONFIG = {
     if (estadoGlobal === 'sin-datos') {
       return `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" class="${base} bg-surface-container-lowest border border-outline-variant text-primary hover:border-secondary transition-colors">${num}<span class="text-[10px] sm:text-xs text-on-surface-variant">Consultar</span></a>`;
     }
-    const t = tramos || [];
-    const completo = t.some(([a, b]) => a <= 12 * 60 && b >= 22 * 60);
-    const tarde = completo || t.some(([a, b]) => a < 22 * 60 && b > 17 * 60);
-    if (tarde) {
-      const chips = completo
-        ? `<span class="hidden sm:inline-block self-start rounded-full bg-[#ffd166] text-primary text-[11px] font-bold px-2 py-0.5">Día completo</span>`
-        : t.map(([a]) => `<span class="hidden sm:block text-[11px] leading-tight"><b>${hhmm(a)}</b> Reservado</span>`).join('');
-      return `<div class="${base} bg-primary-container text-white" title="Reservado">${num}<span class="sm:hidden text-[10px] font-semibold">Reserv.</span>${chips}</div>`;
+    if (tramos) {
+      return `<div class="${base} bg-primary-container text-white" title="Reservado">${num}<span class="text-[10px] sm:text-xs font-semibold">Reservado</span></div>`;
     }
-    const nota = t.map(([a, b]) => `<span class="hidden sm:block text-[11px] leading-tight text-secondary">Ocupado ${hhmm(a)}–${hhmm(b)}</span>`).join('');
-    return `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" aria-label="Reservar el ${d} de ${MESES[m - 1]} por WhatsApp" class="${base} bg-secondary-fixed text-primary ring-0 hover:ring-2 hover:ring-secondary transition-shadow group">${num}<span class="text-[10px] sm:text-xs font-semibold">Libre</span>${nota}<span class="hidden sm:block mt-auto text-[11px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">Reservar →</span></a>`;
+    return `<a href="${waLink(y, m, d)}" target="_blank" rel="noopener" aria-label="Reservar el ${d} de ${MESES[m - 1]} por WhatsApp" class="${base} bg-secondary-fixed text-primary ring-0 hover:ring-2 hover:ring-secondary transition-shadow group">${num}<span class="text-[10px] sm:text-xs font-semibold">Libre</span><span class="hidden sm:block mt-auto text-[11px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">Reservar →</span></a>`;
   }
 
   function pintar(datos, estado) {
